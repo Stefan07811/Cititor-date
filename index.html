@@ -52,10 +52,20 @@
     <h2>Setări</h2>
     <label>Metodă de citire
       <select id="mode">
-        <option value="claude">Claude Vision (exact, recomandat)</option>
+        <option value="gemini">Gemini (GRATUIT, cheie Google, recomandat)</option>
+        <option value="claude">Claude Vision (exact, cu plată)</option>
         <option value="ocr">OCR local (gratuit, fără cheie, mai puțin exact)</option>
       </select>
     </label>
+    <div id="geminiOpts">
+      <label>Cheie Gemini (gratuită)
+        <input id="geminiKey" type="password" placeholder="AIza..." autocomplete="off">
+      </label>
+      <label>Model
+        <input id="geminiModel" type="text" placeholder="gemini-2.5-flash">
+      </label>
+      <p class="muted">Cheie gratuită, fără card: aistudio.google.com/apikey → „Create API key". Planul gratuit are limite pe minut/zi, iar Google poate folosi datele trimise în planul gratuit pentru îmbunătățirea produselor. Nu trimite imagini cu date personale.</p>
+    </div>
     <div id="claudeOpts">
       <label>Cheie API Anthropic
         <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">

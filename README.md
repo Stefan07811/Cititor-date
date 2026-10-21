@@ -11,6 +11,7 @@ Deschide pe telefon `http://<IP-ul-calculatorului>:8080`, apoi „Adaugă pe ecr
 și funcționare offline a interfeței e nevoie de HTTPS (ex. GitHub Pages: Settings → Pages → branch).
 
 ## Metode de citire (⚙️ Setări)
+- **Gemini** (gratuit): cheie de la aistudio.google.com/apikey, fără card.
 - **Claude Vision** (recomandat, exact): ai nevoie de o cheie API Anthropic. Cheia rămâne doar în `localStorage`-ul telefonului.
 - **OCR local** (Tesseract.js, ron+eng): gratuit, fără cheie, dar mai puțin precis la tabele și numere mici – verifică rezultatul.
 
