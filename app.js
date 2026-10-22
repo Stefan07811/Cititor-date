@@ -442,6 +442,11 @@ $('btnPdf').onclick = () => {
   window.print();
 };
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // Când apare o versiune nouă, reîncarcă o singură dată ca să o folosești imediat.
+  const had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) location.reload(); });
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 loadSettings();
 renderThumbs();
