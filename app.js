@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const DEFAULT_MODEL = 'claude-sonnet-5-5';
-const DEFAULT_GEMINI = 'gemini-2.5-flash';
+const DEFAULT_GEMINI = 'gemini-3.8-flash';
 const DEFAULT_PREAMBLE =
   'Mai jos sunt datele extrase din capturi de ecran cu statistici despre meciuri de fotbal și echipele implicate. ' +
   'Analizează-le și spune-mi ce concluzii poți trage despre meciuri și despre echipe.';
@@ -147,28 +147,56 @@ async function callClaude({ b64, text, maxTokens = 8000 }) {
   return j.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
 }
 
+// Caută în contul tău cel mai nou model Gemini „flash” care poate procesa imagini (modelele vechi sunt retrase periodic).
+async function discoverGeminiModel(key) {
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+    const j = await r.json();
+    const ver = n => n.match(/^models\/gemini-(\d+)(?:\.(\d+))?-flash$/)?.slice(1).map(x => +x || 0);
+    const best = (j.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent') && ver(m.name))
+      .sort((x, y) => { const a = ver(x.name), b = ver(y.name); return b[0] - a[0] || b[1] - a[1]; })[0];
+    return best ? best.name.replace('models/', '') : 'gemini-flash-latest';
+  } catch { return 'gemini-flash-latest'; }
+}
+
 // Apel generic Gemini: image (base64 jpeg, opțional) + text; json=true cere răspuns JSON.
 async function callGemini({ b64, text, json = false, temperature = 0 }) {
   const key = store.get('geminiKey', '');
-  if (!key) throw new Error('Lipsește cheia Gemini (⚙️ Setări).');
-  const model = store.get('geminiModel', '') || DEFAULT_GEMINI;
+  if (!key) throw Object.assign(new Error('Lipsește cheia Gemini (⚙️ Setări).'), { fatal: true });
+  const custom = store.get('geminiModel', '');
   const parts = [];
   if (b64) parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
   parts.push({ text });
   const generationConfig = { temperature };
   if (json) generationConfig.responseMimeType = 'application/json';
-  let r, j;
-  for (let t = 0; t < 3; t++) { // reîncearcă la limita pe minut (429) / suprasolicitare (503)
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ parts }], generationConfig })
-    });
-    j = await r.json().catch(() => ({}));
-    if (r.status !== 429 && r.status !== 503) break;
-    await new Promise(res => setTimeout(res, 15000 * (t + 1)));
+  const call = async model => {
+    let r, j;
+    for (let t = 0; t < 3; t++) { // reîncearcă la limita pe minut (429) / suprasolicitare (503)
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({ contents: [{ parts }], generationConfig })
+      });
+      j = await r.json().catch(() => ({}));
+      if (r.status !== 429 && r.status !== 503) break;
+      await new Promise(res => setTimeout(res, 15000 * (t + 1)));
+    }
+    return { r, j };
+  };
+  let model = custom || store.get('geminiModelAuto', '') || DEFAULT_GEMINI;
+  let { r, j } = await call(model);
+  const msg = j.error?.message || '';
+  if (!r.ok && !custom && (r.status === 404 || /no longer available|not found|not supported/i.test(msg))) {
+    model = await discoverGeminiModel(key);
+    store.set('geminiModelAuto', model);
+    ({ r, j } = await call(model));
   }
-  if (!r.ok) throw new Error(j.error?.message || `Eroare API (${r.status})`);
+  if (!r.ok) {
+    const err = new Error(j.error?.message || `Eroare API (${r.status})`);
+    err.fatal = r.status >= 400 && r.status < 500 && r.status !== 429; // cheie/model/cerere greșită: nu are rost să continuăm
+    throw err;
+  }
   const out = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('\n').trim();
   if (!out) throw new Error('Răspuns gol (poate fi blocat de filtre).');
   return out;
@@ -231,9 +259,10 @@ $('btnRun').onclick = async () => {
   if ((mode === 'claude' && !store.get('apiKey', '')) || (mode === 'gemini' && !store.get('geminiKey', ''))) { $('dlg').showModal(); return; }
   $('btnRun').disabled = true;
   $('progress').hidden = false;
-  let failed = 0;
+  let failed = 0, fatal = false;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
+    if (it.data && !it.error) continue; // deja citită la o rulare anterioară
     it.status = '…'; renderThumbs();
     $('status').textContent = `Citesc imaginea ${i + 1} din ${items.length}…`;
     const base = i / items.length;
@@ -252,11 +281,12 @@ $('btnRun').onclick = async () => {
       it.data = null;
       it.error = err.message;
       it.status = '✗';
+      if (err.fatal) { renderThumbs(); $('status').textContent = 'Oprit: ' + err.message; fatal = true; break; }
     }
     renderThumbs();
   }
   $('bar').style.width = '100%';
-  $('status').textContent = failed ? `Gata, dar ${failed} imagini au eșuat (marcate cu ✗). Poți reîncerca.` : 'Gata!';
+  if (!fatal) $('status').textContent = failed ? `Gata, dar ${failed} imagini au eșuat (marcate cu ✗). Poți reîncerca.` : 'Gata!';
   $('btnRun').disabled = false;
   buildResult();
 };
