@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0b6b3a">
+<meta name="theme-color" content="#0a4d2b">
 <title>Cititor Date Fotbal</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg">
@@ -12,37 +12,48 @@
 </head>
 <body>
 <header>
-  <h1>⚽ Cititor Date Fotbal</h1>
-  <button id="btnSettings" class="icon" aria-label="Setări">⚙️</button>
+  <div class="brand"><span class="logo">⚽</span><div><h1>Date Fotbal</h1><small>Din capturi în statistici clare</small></div></div>
+  <button id="btnSettings" class="iconbtn" aria-label="Setări">⚙️</button>
 </header>
 
 <main>
-  <section class="card">
-    <h2>1. Alege imaginile</h2>
-    <label class="btn primary big" for="file">📷 Adaugă imagini</label>
+  <section class="card" id="stepImages">
+    <div class="step"><span class="num">1</span><h2>Imagini</h2><button id="btnClear" class="link" hidden>Șterge tot</button></div>
+    <label class="drop" for="file">
+      <span class="dropicon">📷</span>
+      <strong>Adaugă capturi</strong>
+      <small>Alegi mai multe odată din galerie</small>
+    </label>
     <input id="file" type="file" accept="image/*" multiple hidden>
     <div id="thumbs" class="thumbs"></div>
-    <p id="count" class="muted">Nicio imagine.</p>
+    <p id="count" class="muted"></p>
   </section>
 
   <section class="card">
-    <h2>2. Extrage informațiile</h2>
-    <p id="modeInfo" class="muted"></p>
-    <button id="btnRun" class="btn primary big" disabled>🔍 Extrage datele</button>
+    <div class="step"><span class="num">2</span><h2>Extragere</h2></div>
+    <p id="modeInfo" class="chip"></p>
+    <button id="btnRun" class="btn primary big" disabled>🔍 Extrage statisticile</button>
     <div id="progress" class="progress" hidden><div id="bar"></div></div>
     <p id="status" class="muted"></p>
   </section>
 
-  <section class="card" id="resultCard" hidden>
-    <h2>3. Rezultat</h2>
-    <p class="muted">Poți edita textul înainte să-l trimiți.</p>
-    <textarea id="result" spellcheck="false"></textarea>
+  <section id="resultCard" hidden>
+    <div class="step top"><span class="num">3</span><h2>Rezultat</h2></div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tabView" role="tab">📊 Statistici</button>
+      <button class="tab" id="tabText" role="tab">📝 Text pentru AI</button>
+    </div>
+    <div id="view" class="view"></div>
+    <div id="textPane" hidden>
+      <p class="muted">Textul de mai jos e cel trimis mai departe. Îl poți edita.</p>
+      <textarea id="result" spellcheck="false"></textarea>
+    </div>
     <div class="actions">
-      <button id="btnCopy" class="btn">📋 Copiază</button>
+      <button id="btnCopy" class="btn primary">📋 Copiază</button>
       <button id="btnShare" class="btn">📤 Trimite</button>
+      <button id="btnPdf" class="btn">📄 PDF</button>
       <button id="btnTxt" class="btn">⬇️ .txt</button>
       <button id="btnMd" class="btn">⬇️ .md</button>
-      <button id="btnPdf" class="btn">📄 PDF</button>
     </div>
   </section>
 </main>
@@ -73,15 +84,16 @@
       <label>Model
         <input id="model" type="text" placeholder="claude-sonnet-5-5">
       </label>
-      <p class="muted">Cheia rămâne doar în telefonul tău (localStorage) și este trimisă numai către api.anthropic.com. Imaginile se trimit către Anthropic pentru citire.</p>
+      <p class="muted">Cheia rămâne doar în telefonul tău (localStorage) și este trimisă numai către api.anthropic.com.</p>
     </div>
-    <label>Instrucțiune pentru AI-ul care va analiza (se pune la începutul fișierului, opțional)
+    <label>Instrucțiune pentru AI-ul care va analiza (se pune la începutul textului, opțional)
       <textarea id="preamble" rows="4"></textarea>
     </label>
     <menu><button value="ok" class="btn primary">Salvează</button></menu>
   </form>
 </dialog>
 
+<div id="printArea"></div>
 <script src="app.js"></script>
 </body>
 </html>

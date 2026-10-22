@@ -6,20 +6,27 @@ const DEFAULT_PREAMBLE =
   'Mai jos sunt datele extrase din capturi de ecran cu statistici despre meciuri de fotbal și echipele implicate. ' +
   'Analizează-le și spune-mi ce concluzii poți trage despre meciuri și despre echipe.';
 const PROMPT =
-  'Aceasta este o captură de ecran cu informații despre un meci de fotbal sau despre echipe (statistici, clasament, formă, ' +
-  'cote, H2H, lot, program etc.). Transcrie TOATE informațiile vizibile EXACT așa cum apar: nume de echipe și jucători, ' +
-  'scoruri, date și ore, competiție/etapă, fiecare etichetă de statistică împreună cu valorile ambelor echipe, procente, ' +
-  'cote, tabele (păstrează rândurile și coloanele). Reguli: nu interpreta, nu rezuma, nu corecta, nu omite nimic, nu ' +
-  'inventa valori. Dacă un text sau un număr este ilizibil scrie [ilizibil]. Păstrează limba originală. ' +
-  'Format: Markdown; folosește tabele Markdown pentru date tabelare și pentru statistici de tip „echipă A | statistică | echipă B". ' +
-  'Răspunde doar cu transcrierea, fără introducere sau comentarii.';
+  'Imaginea este o captură cu statistici/informații despre un meci de fotbal sau despre echipe. Extrage DOAR datele statistice ' +
+  'și informațiile despre meci/echipe/jucători și organizează-le pe capitole (ex: Rezultat, Statistici meci, Clasament, Formă recentă, ' +
+  'Meciuri directe (H2H), Cote, Lot și accidentări, Program, Clasament marcatori etc.). IGNORĂ complet: reclame, meniuri, butoane, ' +
+  'taburi de navigare, logo-uri, bannere de pariuri, ceasul/bateria/semnalul telefonului. ' +
+  'Reguli: copiază valorile EXACT ca în imagine (numere, procente, scoruri, minute, cote) ca text; nu interpreta, nu rezuma, nu corecta, ' +
+  'nu inventa; dacă ceva nu se poate citi scrie "[ilizibil]"; păstrează limba originală a etichetelor. ' +
+  'Răspunde DOAR cu JSON valid, fără alt text, exact în forma: ' +
+  '{"meci":{"gazde":"","oaspeti":"","scor":"","competitie":"","data":"","ora":"","stadion":""},' +
+  '"capitole":[{"titlu":"","coloane":["..."],"randuri":[["..."]],"note":["..."]}]}. ' +
+  'Detalii: câmpurile necunoscute din "meci" rămân "" (șir gol). Toate celulele sunt șiruri de caractere. ' +
+  'Pentru comparații între cele două echipe folosește coloane ["Statistică","<nume gazde>","<nume oaspeți>"] cu un rând pe statistică. ' +
+  'Pentru clasamente/tabele păstrează toate coloanele și toate rândurile din imagine. ' +
+  'Dacă un capitol nu e tabel (ex: o informație text), folosește coloane [] și randuri [] și pune textul în "note". ' +
+  'Dacă imaginea e despre o singură echipă, pune-o la "gazde" și lasă "oaspeti" gol.';
 
 const store = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }
 };
 
-let items = []; // {file, url, status, text}
+let items = []; // {file, url, status, data, error}
 
 /* ---------- Setări ---------- */
 function loadSettings() {
@@ -58,7 +65,7 @@ $('settings').addEventListener('submit', () => {
 
 /* ---------- Imagini ---------- */
 $('file').onchange = e => {
-  for (const f of e.target.files) items.push({ file: f, url: URL.createObjectURL(f), status: '', text: '' });
+  for (const f of e.target.files) items.push({ file: f, url: URL.createObjectURL(f), status: '', data: null, error: '' });
   e.target.value = '';
   renderThumbs();
 };
@@ -70,11 +77,15 @@ function renderThumbs() {
     d.className = 'thumb';
     d.innerHTML = '<img alt=""><button aria-label="Șterge">✕</button><span class="st"></span>';
     d.querySelector('img').src = it.url;
-    d.querySelector('.st').textContent = it.status || String(i + 1);
+    const st = d.querySelector('.st');
+    st.textContent = it.status || String(i + 1);
+    if (it.status === '✓') st.classList.add('ok');
+    if (it.status === '✗') st.classList.add('err');
     d.querySelector('button').onclick = () => { URL.revokeObjectURL(it.url); items.splice(i, 1); renderThumbs(); };
     box.appendChild(d);
   });
-  $('count').textContent = items.length ? `${items.length} imagini selectate.` : 'Nicio imagine.';
+  $('count').textContent = items.length ? `${items.length} imagini selectate.` : '';
+  $('btnClear').hidden = !items.length;
   $('btnRun').disabled = !items.length;
 }
 
@@ -94,6 +105,8 @@ const blobToB64 = b => new Promise((res, rej) => {
   fr.onerror = rej;
   fr.readAsDataURL(b);
 });
+
+$('btnClear').onclick = () => { items.forEach(i => URL.revokeObjectURL(i.url)); items = []; $('resultCard').hidden = true; $('status').textContent = ''; renderThumbs(); };
 
 /* ---------- Extragere ---------- */
 async function readWithClaude(file) {
@@ -134,7 +147,7 @@ async function readWithGemini(file) {
       headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: PROMPT }] }],
-        generationConfig: { temperature: 0 }
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
       })
     });
     j = await r.json().catch(() => ({}));
@@ -209,13 +222,18 @@ $('btnRun').onclick = async () => {
     const base = i / items.length;
     $('bar').style.width = base * 100 + '%';
     try {
-      it.text = mode === 'claude' ? await readWithClaude(it.file)
-        : mode === 'gemini' ? await readWithGemini(it.file)
-        : await readWithOcr(it.file, p => { $('bar').style.width = (base + p / items.length) * 100 + '%'; });
+      if (mode === 'ocr') {
+        const raw = await readWithOcr(it.file, p => { $('bar').style.width = (base + p / items.length) * 100 + '%'; });
+        it.data = { meci: {}, capitole: [{ titlu: 'Text citit prin OCR', coloane: [], randuri: [], note: raw.split('\n').filter(l => l.trim()) }] };
+      } else {
+        it.data = parseData(mode === 'claude' ? await readWithClaude(it.file) : await readWithGemini(it.file));
+      }
+      it.error = '';
       it.status = '✓';
     } catch (err) {
       failed++;
-      it.text = `[EROARE la citirea imaginii: ${err.message}]`;
+      it.data = null;
+      it.error = err.message;
       it.status = '✗';
     }
     renderThumbs();
@@ -226,13 +244,172 @@ $('btnRun').onclick = async () => {
   buildResult();
 };
 
+/* ---------- Date → structură ---------- */
+function parseData(raw) {
+  let t = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const i = t.indexOf('{'), j = t.lastIndexOf('}');
+  try {
+    const o = JSON.parse(i >= 0 ? t.slice(i, j + 1) : t);
+    const str = v => (v == null ? '' : String(v).trim());
+    const meci = {};
+    for (const k of ['gazde', 'oaspeti', 'scor', 'competitie', 'data', 'ora', 'stadion']) meci[k] = str(o.meci?.[k]);
+    const capitole = (Array.isArray(o.capitole) ? o.capitole : []).map(c => ({
+      titlu: str(c.titlu) || 'Alte informații',
+      coloane: (c.coloane || []).map(str),
+      randuri: (c.randuri || []).map(r => (Array.isArray(r) ? r : [r]).map(str)),
+      note: (c.note || []).map(str).filter(Boolean)
+    }));
+    return { meci, capitole };
+  } catch {
+    // Răspuns care nu e JSON: păstrăm textul ca atare, ca să nu pierdem nimic.
+    return { meci: {}, capitole: [{ titlu: 'Text citit', coloane: [], randuri: [], note: raw.split('\n').filter(l => l.trim()) }] };
+  }
+}
+
+const norm = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const META_KEYS = ['scor', 'competitie', 'data', 'ora', 'stadion'];
+
+// Grupează imaginile pe meci și îmbină capitolele cu același titlu și aceleași coloane.
+function groupByMatch() {
+  const groups = new Map();
+  for (const it of items) {
+    if (!it.data) continue;
+    const m = it.data.meci;
+    const key = m.gazde && m.oaspeti ? norm(m.gazde) + '|' + norm(m.oaspeti) : m.gazde ? norm(m.gazde) : '';
+    if (!groups.has(key)) groups.set(key, { meci: { gazde: '', oaspeti: '', scor: '', competitie: '', data: '', ora: '', stadion: '' }, capitole: [] });
+    const g = groups.get(key);
+    for (const k of ['gazde', 'oaspeti', ...META_KEYS]) if (!g.meci[k] && m[k]) g.meci[k] = m[k];
+    for (const c of it.data.capitole) {
+      const same = g.capitole.find(x => norm(x.titlu) === norm(c.titlu) && JSON.stringify(x.coloane.map(norm)) === JSON.stringify(c.coloane.map(norm)));
+      if (same) {
+        const seen = new Set(same.randuri.map(r => r.join('\u0001')));
+        for (const r of c.randuri) if (!seen.has(r.join('\u0001'))) { same.randuri.push(r); seen.add(r.join('\u0001')); }
+        for (const n of c.note) if (!same.note.includes(n)) same.note.push(n);
+      } else g.capitole.push({ ...c, randuri: [...c.randuri], note: [...c.note] });
+    }
+  }
+  return [...groups.values()];
+}
+
+const title = m => (m.gazde && m.oaspeti ? `${m.gazde} – ${m.oaspeti}` : m.gazde || 'Date generale');
+const num = s => { const n = parseFloat(String(s).replace(',', '.').replace('%', '')); return isNaN(n) ? null : n; };
+const isCmp = c => c.coloane.length === 3 && c.randuri.length && c.randuri.filter(r => r.length === 3 && num(r[1]) !== null && num(r[2]) !== null).length >= c.randuri.length * 0.5;
+
+/* ---------- Afișare vizuală ---------- */
+function el(tag, cls, txt) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (txt != null) e.textContent = txt;
+  return e;
+}
+function renderChapter(c, openByDefault) {
+  const d = el('details', 'chap');
+  d.open = openByDefault;
+  d.appendChild(el('summary', null, c.titlu));
+  const body = el('div', 'cbody');
+  if (isCmp(c)) {
+    const lg = el('div', 'legend');
+    lg.append(el('span', null, c.coloane[1]), el('span', null, c.coloane[2]));
+    body.appendChild(lg);
+    for (const r of c.randuri) {
+      const box = el('div', 'cmp');
+      const row = el('div', 'row');
+      row.append(el('span', 'v', r[1] ?? ''), el('span', 'l', r[0] ?? ''), el('span', 'v', r[2] ?? ''));
+      box.appendChild(row);
+      const a = num(r[1]), b = num(r[2]);
+      if (a !== null && b !== null && a + b > 0) {
+        const bar = el('div', 'bar');
+        const x = el('i'), y = el('i');
+        x.style.width = (a / (a + b)) * 100 + '%'; y.style.width = (b / (a + b)) * 100 + '%';
+        bar.append(x, y);
+        box.appendChild(bar);
+      }
+      body.appendChild(box);
+    }
+  } else if (c.randuri.length) {
+    const w = el('div', 'tw'), t = el('table');
+    if (c.coloane.length) {
+      const tr = el('tr');
+      c.coloane.forEach(h => tr.appendChild(el('th', null, h)));
+      t.appendChild(el('thead')).appendChild(tr);
+    }
+    const tb = el('tbody');
+    for (const r of c.randuri) { const tr = el('tr'); r.forEach(v => tr.appendChild(el('td', null, v))); tb.appendChild(tr); }
+    t.appendChild(tb); w.appendChild(t); body.appendChild(w);
+  }
+  if (c.note.length) { const ul = el('ul', 'notes'); c.note.forEach(n => ul.appendChild(el('li', null, n))); body.appendChild(ul); }
+  d.appendChild(body);
+  return d;
+}
+function renderView(groups) {
+  const v = $('view');
+  v.innerHTML = '';
+  for (const g of groups) {
+    const card = el('div', 'match'), head = el('div', 'mhead'), tm = el('div', 'teams');
+    if (g.meci.gazde && g.meci.oaspeti) {
+      tm.append(el('div', 't', g.meci.gazde), el('div', 'sc', g.meci.scor || 'vs'), el('div', 't', g.meci.oaspeti));
+    } else {
+      tm.style.display = 'block';
+      tm.appendChild(el('div', 't', title(g.meci) + (g.meci.scor ? '  ' + g.meci.scor : '')));
+    }
+    head.appendChild(tm);
+    const meta = el('div', 'meta');
+    for (const k of ['competitie', 'data', 'ora', 'stadion']) if (g.meci[k]) meta.appendChild(el('span', null, g.meci[k]));
+    if (meta.childNodes.length) head.appendChild(meta);
+    card.appendChild(head);
+    g.capitole.forEach((c, i) => card.appendChild(renderChapter(c, i < 3)));
+    v.appendChild(card);
+  }
+  const errs = items.filter(i => i.error);
+  if (errs.length) {
+    const b = el('div', 'errbox');
+    b.appendChild(el('strong', null, `${errs.length} imagini nu au putut fi citite:`));
+    errs.forEach(i => b.appendChild(el('div', null, `• ${i.file.name || 'imagine'}: ${i.error}`)));
+    v.appendChild(b);
+  }
+}
+
+/* ---------- Text (Markdown) pentru AI ---------- */
+const cell = s => String(s).replace(/\|/g, '/').replace(/\n/g, ' ');
+function toMarkdown(groups) {
+  const out = [];
+  for (const g of groups) {
+    out.push(`# ${title(g.meci)}`);
+    if (g.meci.gazde && g.meci.oaspeti) out.push(`- Gazde: ${g.meci.gazde}\n- Oaspeți: ${g.meci.oaspeti}`);
+    const info = { scor: 'Scor', competitie: 'Competiție', data: 'Data', ora: 'Ora', stadion: 'Stadion' };
+    const lines = Object.entries(info).filter(([k]) => g.meci[k]).map(([k, l]) => `- ${l}: ${g.meci[k]}`);
+    if (lines.length) out.push(lines.join('\n'));
+    for (const c of g.capitole) {
+      out.push(`## ${c.titlu}`);
+      if (c.randuri.length) {
+        const cols = c.coloane.length ? c.coloane : c.randuri[0].map((_, i) => `Col ${i + 1}`);
+        out.push([`| ${cols.map(cell).join(' | ')} |`, `|${cols.map(() => '---').join('|')}|`, ...c.randuri.map(r => `| ${cols.map((_, i) => cell(r[i] ?? '')).join(' | ')} |`)].join('\n'));
+      }
+      if (c.note.length) out.push(c.note.map(n => `- ${n}`).join('\n'));
+    }
+  }
+  const errs = items.filter(i => i.error);
+  if (errs.length) out.push('## Imagini necitite\n' + errs.map(i => `- ${i.file.name || 'imagine'}: ${i.error}`).join('\n'));
+  return out.join('\n\n');
+}
+
 function buildResult() {
+  const groups = groupByMatch();
   const pre = store.get('preamble', DEFAULT_PREAMBLE).trim();
-  const parts = items.map((it, i) => `## Imaginea ${i + 1}${it.file.name ? ` (${it.file.name})` : ''}\n\n${it.text}`);
-  $('result').value = (pre ? pre + '\n\n---\n\n' : '') + '# Date extrase din imagini\n\n' + parts.join('\n\n---\n\n') + '\n';
+  renderView(groups);
+  $('result').value = (pre ? pre + '\n\n---\n\n' : '') + toMarkdown(groups) + '\n';
   $('resultCard').hidden = false;
+  showTab('view');
   $('resultCard').scrollIntoView({ behavior: 'smooth' });
 }
+function showTab(t) {
+  $('view').hidden = t !== 'view';
+  $('textPane').hidden = t !== 'text';
+  $('tabView').classList.toggle('on', t === 'view');
+  $('tabText').classList.toggle('on', t === 'text');
+}
+$('tabView').onclick = () => showTab('view');
+$('tabText').onclick = () => showTab('text');
 
 /* ---------- Export ---------- */
 const text = () => $('result').value;
@@ -259,9 +436,9 @@ $('btnShare').onclick = async () => {
 };
 // PDF: folosește dialogul de tipărire al telefonului → „Salvează ca PDF" (păstrează diacriticele).
 $('btnPdf').onclick = () => {
-  let p = $('printArea');
-  if (!p) { p = document.createElement('div'); p.id = 'printArea'; document.body.appendChild(p); }
-  p.textContent = text();
+  const p = $('printArea');
+  p.innerHTML = $('view').innerHTML;
+  p.querySelectorAll('details').forEach(d => { d.open = true; });
   window.print();
 };
 
