@@ -39,14 +39,25 @@
 
   <section id="resultCard" hidden>
     <div class="step top"><span class="num">3</span><h2>Rezultat</h2></div>
+    <label class="qlabel">Întrebare specifică pentru AI (opțional)
+      <input id="predQ" type="text" placeholder="ex: Merită peste 2.5 goluri? Cine câștigă la cornere?">
+    </label>
+    <button id="btnPred" class="btn predbtn big">🔮 Predicții AI pentru toate statisticile</button>
     <div class="tabs" role="tablist">
       <button class="tab on" id="tabView" role="tab">📊 Statistici</button>
-      <button class="tab" id="tabText" role="tab">📝 Text pentru AI</button>
+      <button class="tab" id="tabText" role="tab">📝 Text</button>
+      <button class="tab" id="tabPred" role="tab">🔮 Predicții</button>
     </div>
     <div id="view" class="view"></div>
     <div id="textPane" hidden>
       <p class="muted">Textul de mai jos e cel trimis mai departe. Îl poți edita.</p>
       <textarea id="result" spellcheck="false"></textarea>
+    </div>
+    <div id="predPane" hidden>
+      <button id="btnPredRun" class="btn big">🔄 Generează din nou</button>
+      <div id="predOut" class="md"></div>
+      <div id="predActions" hidden><button id="btnPredCopy" class="btn primary big">📋 Copiază predicțiile</button></div>
+      <p class="muted">Predicțiile sunt estimări statistice făcute de un AI doar pe baza datelor din capturi. Nu sunt garanții și nu înlocuiesc propria judecată.</p>
     </div>
     <div class="actions">
       <button id="btnCopy" class="btn primary">📋 Copiază</button>

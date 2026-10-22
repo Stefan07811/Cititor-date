@@ -21,6 +21,22 @@ const PROMPT =
   'Dacă un capitol nu e tabel (ex: o informație text), folosește coloane [] și randuri [] și pune textul în "note". ' +
   'Dacă imaginea e despre o singură echipă, pune-o la "gazde" și lasă "oaspeti" gol.';
 
+const PRED_PROMPT =
+  'Ești un analist de fotbal. Pe baza EXCLUSIV a datelor statistice de mai jos, fă predicții pentru FIECARE meci și pentru TOATE piețele ' +
+  'pentru care datele permit o estimare. Răspunde în limba română, în Markdown, cu structura:\n' +
+  '# <Gazde – Oaspeți>\n' +
+  '## Rezumat – forma, punctele forte și slabe ale fiecărei echipe, cu cifrele din date.\n' +
+  '## Predicții – un tabel cu coloanele: Piață | Predicție | Probabilitate estimată | Încredere (scăzută/medie/ridicată) | Justificare scurtă (cu cifre din date). ' +
+  'Piețe: rezultat final 1X2 (probabilitățile însumează 100%), șansă dublă, goluri peste/sub 1.5, 2.5, 3.5, ambele echipe marchează, ' +
+  'primele 3 scoruri exacte, handicap, goluri pe reprize, cornere, cartonașe, șuturi pe poartă, posesie – doar dacă există date relevante; ' +
+  'pentru o piață fără date scrie „date insuficiente”, nu ghici.\n' +
+  '## Scor cel mai probabil\n' +
+  '## Riscuri și date lipsă – ce ar schimba predicția.\n' +
+  'La final (dacă sunt mai multe meciuri): ## Top predicții după încredere. Dacă datele permit, include și ## Observații pe fiecare statistică ' +
+  '(ce arată fiecare capitol din date despre meci).\n' +
+  'Reguli: nu inventa statistici și nu folosi cunoștințe externe despre formă/accidentări care nu apar în date; citează cifrele pe care te bazezi; ' +
+  'probabilități realiste și calibrate (niciodată 0% sau 100%); precizează că sunt estimări statistice, nu garanții.\n\n';
+
 const store = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }
@@ -109,10 +125,13 @@ const blobToB64 = b => new Promise((res, rej) => {
 $('btnClear').onclick = () => { items.forEach(i => URL.revokeObjectURL(i.url)); items = []; $('resultCard').hidden = true; $('status').textContent = ''; renderThumbs(); };
 
 /* ---------- Extragere ---------- */
-async function readWithClaude(file) {
+// Apel generic Claude: image (base64 jpeg, opțional) + text.
+async function callClaude({ b64, text, maxTokens = 8000 }) {
   const key = store.get('apiKey', '');
   if (!key) throw new Error('Lipsește cheia API (⚙️ Setări).');
-  const b64 = await blobToB64(await toJpeg(file));
+  const content = [];
+  if (b64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
+  content.push({ type: 'text', text });
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -121,34 +140,29 @@ async function readWithClaude(file) {
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true'
     },
-    body: JSON.stringify({
-      model: store.get('model', '') || DEFAULT_MODEL,
-      max_tokens: 8000,
-      messages: [{ role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
-        { type: 'text', text: PROMPT }
-      ] }]
-    })
+    body: JSON.stringify({ model: store.get('model', '') || DEFAULT_MODEL, max_tokens: maxTokens, messages: [{ role: 'user', content }] })
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error?.message || `Eroare API (${r.status})`);
   return j.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
 }
 
-async function readWithGemini(file) {
+// Apel generic Gemini: image (base64 jpeg, opțional) + text; json=true cere răspuns JSON.
+async function callGemini({ b64, text, json = false, temperature = 0 }) {
   const key = store.get('geminiKey', '');
   if (!key) throw new Error('Lipsește cheia Gemini (⚙️ Setări).');
-  const b64 = await blobToB64(await toJpeg(file));
   const model = store.get('geminiModel', '') || DEFAULT_GEMINI;
+  const parts = [];
+  if (b64) parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
+  parts.push({ text });
+  const generationConfig = { temperature };
+  if (json) generationConfig.responseMimeType = 'application/json';
   let r, j;
   for (let t = 0; t < 3; t++) { // reîncearcă la limita pe minut (429) / suprasolicitare (503)
     r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: PROMPT }] }],
-        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
-      })
+      body: JSON.stringify({ contents: [{ parts }], generationConfig })
     });
     j = await r.json().catch(() => ({}));
     if (r.status !== 429 && r.status !== 503) break;
@@ -156,9 +170,12 @@ async function readWithGemini(file) {
   }
   if (!r.ok) throw new Error(j.error?.message || `Eroare API (${r.status})`);
   const out = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('\n').trim();
-  if (!out) throw new Error('Răspuns gol (imaginea poate fi blocată de filtre).');
+  if (!out) throw new Error('Răspuns gol (poate fi blocat de filtre).');
   return out;
 }
+
+const readWithClaude = async file => callClaude({ b64: await blobToB64(await toJpeg(file)), text: PROMPT });
+const readWithGemini = async file => callGemini({ b64: await blobToB64(await toJpeg(file)), text: PROMPT, json: true });
 
 // Pregătire pentru OCR: mărire, tonuri de gri, inversare pe fundal închis, contrast.
 async function prepForOcr(file) {
@@ -398,6 +415,7 @@ function buildResult() {
   const pre = store.get('preamble', DEFAULT_PREAMBLE).trim();
   renderView(groups);
   $('result').value = (pre ? pre + '\n\n---\n\n' : '') + toMarkdown(groups) + '\n';
+  predText = ''; $('predOut').innerHTML = ''; $('predActions').hidden = true;
   $('resultCard').hidden = false;
   showTab('view');
   $('resultCard').scrollIntoView({ behavior: 'smooth' });
@@ -405,11 +423,85 @@ function buildResult() {
 function showTab(t) {
   $('view').hidden = t !== 'view';
   $('textPane').hidden = t !== 'text';
-  $('tabView').classList.toggle('on', t === 'view');
-  $('tabText').classList.toggle('on', t === 'text');
+  $('predPane').hidden = t !== 'pred';
+  for (const [k, id] of [['view', 'tabView'], ['text', 'tabText'], ['pred', 'tabPred']]) $(id).classList.toggle('on', t === k);
 }
 $('tabView').onclick = () => showTab('view');
 $('tabText').onclick = () => showTab('text');
+$('tabPred').onclick = () => showTab('pred');
+
+/* ---------- Predicții AI ---------- */
+function inline(parent, s) {
+  s.split(/(\*\*[^*]+\*\*)/).forEach(p => {
+    if (p.startsWith('**') && p.endsWith('**') && p.length > 4) parent.appendChild(el('strong', null, p.slice(2, -2)));
+    else if (p) parent.appendChild(document.createTextNode(p));
+  });
+}
+// Randare Markdown minimală (titluri, liste, tabele, **bold**), fără innerHTML.
+function mdToDom(md, root) {
+  root.innerHTML = '';
+  const lines = md.split('\n');
+  let i = 0, list = null;
+  const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(x => x.trim());
+  while (i < lines.length) {
+    const l = lines[i];
+    let m;
+    if (/^\s*\|/.test(l)) {
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      const body = rows.filter(r => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r) || !/-/.test(r));
+      const w = el('div', 'tw'), t = el('table');
+      body.forEach((r, k) => {
+        const tr = el('tr');
+        cells(r).forEach(c => { const td = el(k === 0 ? 'th' : 'td'); inline(td, c); tr.appendChild(td); });
+        (k === 0 ? t.appendChild(el('thead')) : (t.tBodies[0] || t.appendChild(el('tbody')))).appendChild(tr);
+      });
+      w.appendChild(t); root.appendChild(w); list = null; continue;
+    }
+    if ((m = /^(#{1,4})\s+(.*)$/.exec(l))) { const h = el('h' + (m[1].length + 1)); inline(h, m[2]); root.appendChild(h); list = null; }
+    else if ((m = /^\s*(?:[-*]|\d+\.)\s+(.*)$/.exec(l))) {
+      if (!list) { list = el('ul', 'notes'); root.appendChild(list); }
+      const li = el('li'); inline(li, m[1]); list.appendChild(li);
+    } else if (l.trim() && l.trim() !== '---') { const p = el('p'); inline(p, l); root.appendChild(p); list = null; }
+    else list = null;
+    i++;
+  }
+}
+
+let predText = '';
+async function runPredictions() {
+  let mode = store.get('mode', 'gemini');
+  if (mode === 'ocr') mode = store.get('geminiKey', '') ? 'gemini' : store.get('apiKey', '') ? 'claude' : '';
+  if ((mode === 'gemini' && !store.get('geminiKey', '')) || (mode === 'claude' && !store.get('apiKey', '')) || !mode) {
+    $('predOut').textContent = 'Pentru predicții ai nevoie de o cheie Gemini (gratuită) sau Claude – adaug-o din ⚙️ Setări.';
+    $('dlg').showModal();
+    return;
+  }
+  showTab('pred');
+  $('btnPred').disabled = true;
+  $('predOut').innerHTML = '';
+  $('predOut').appendChild(el('p', 'muted', '🔮 Analizez statisticile și calculez predicțiile… (poate dura până la un minut)'));
+  const q = $('predQ').value.trim();
+  const data = toMarkdown(groupByMatch());
+  const text = PRED_PROMPT + (q ? `Întrebare specifică a utilizatorului (tratează-o cu prioritate): ${q}\n\n` : '') + '=== DATE STATISTICE ===\n\n' + data;
+  try {
+    predText = mode === 'claude' ? await callClaude({ text, maxTokens: 8000 }) : await callGemini({ text, temperature: 0.3 });
+    mdToDom(predText, $('predOut'));
+    $('predActions').hidden = false;
+  } catch (err) {
+    predText = '';
+    $('predOut').innerHTML = '';
+    const b = el('div', 'errbox', 'Eroare la generarea predicțiilor: ' + err.message);
+    $('predOut').appendChild(b);
+  }
+  $('btnPred').disabled = false;
+}
+$('btnPred').onclick = runPredictions;
+$('btnPredRun').onclick = runPredictions;
+$('btnPredCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(predText); } catch {}
+  $('status').textContent = 'Predicții copiate.';
+};
 
 /* ---------- Export ---------- */
 const text = () => $('result').value;
@@ -438,6 +530,7 @@ $('btnShare').onclick = async () => {
 $('btnPdf').onclick = () => {
   const p = $('printArea');
   p.innerHTML = $('view').innerHTML;
+  if (predText) { const d = el('div', 'predprint'); mdToDom(predText, d); p.appendChild(d); }
   p.querySelectorAll('details').forEach(d => { d.open = true; });
   window.print();
 };
